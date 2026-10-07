@@ -25,7 +25,6 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
     import { getDatabase, ref, set, get, update, onValue, remove } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-database.js";
 
-    // 您的 Firebase 設定
     const firebaseConfig = {
       apiKey: "AIzaSyCdy8u9yX2Ep09MGBR6UB9pTV21Qu4g_BM",
       authDomain: "game-theory-9aaae.firebaseapp.com",
@@ -40,7 +39,6 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // 暴露給 Babel React 腳本使用
     window.__fb = { db, ref, set, get, update, onValue, remove };
   </script>
 
@@ -49,10 +47,10 @@
     const { useState, useEffect, useRef } = React;
 
     const PAYOFF = {
-      "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作" },
-      "A-B": { score1: -2, score2: 5, label1: "-2", label2: "+5", tag: "背叛獲利" },
-      "B-A": { score1: 5, score2: -2, label1: "+5", label2: "-2", tag: "背叛獲利" },
-      "B-B": { score1: 1, score2: 1, label1: "+1", label2: "+1", tag: "相互對立" }
+      "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作", type: "coop" },
+      "A-B": { score1: -2, score2: 5, label1: "-2", label2: "+5", tag: "背叛獲利", type: "defect" },
+      "B-A": { score1: 5, score2: -2, label1: "+5", label2: "-2", tag: "背叛獲利", type: "defect" },
+      "B-B": { score1: 1, score2: 1, label1: "+1", label2: "+1", tag: "相互對立", type: "conflict" }
     };
 
     function App() {
@@ -65,7 +63,7 @@
       const [showRuleModal, setShowRuleModal] = useState(false);
       const qrCanvasRef = useRef(null);
 
-      // 自動讀取 URL 上的參數 (?room=123456)
+      // 自動讀取 URL 參數 (?room=123456)
       useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const r = params.get("room");
@@ -79,7 +77,7 @@
         setPlayerId(storedId);
       }, []);
 
-      // 監聽 Firebase 房間資料變化
+      // 監聽 Firebase 房間資料
       useEffect(() => {
         if (!roomId || !window.__fb) return;
         const { db, ref, onValue } = window.__fb;
@@ -101,7 +99,7 @@
         if (role === "host" && roomId && qrCanvasRef.current && window.QRCode) {
           const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
           window.QRCode.toCanvas(qrCanvasRef.current, joinUrl, {
-            width: 170,
+            width: 160,
             margin: 1,
             color: { dark: "#0f172a", light: "#f8fafc" }
           });
@@ -119,13 +117,15 @@
           round: 1,
           players: {},
           pairs: [],
-          byePlayerId: null
+          byePlayerId: null,
+          history: [] // 儲存多回合演化數據
         };
         await set(ref(db, `rooms/${code}`), initialRoom);
         setRoomId(code);
         setRole("host");
       };
 
+      // 啟動下一輪：shuffle 為 false 表示「維持原配對 (不洗牌)」
       const startNextRound = async (shuffle = true) => {
         if (!roomData || !window.__fb) return;
         const { db, ref, update } = window.__fb;
@@ -137,29 +137,38 @@
           return;
         }
 
-        let playerPool = [...pKeys];
-        if (shuffle) {
-          playerPool.sort(() => Math.random() - 0.5);
-        }
-
-        const pairs = [];
+        let newPairs = [];
         let byeId = null;
 
-        // 如果是單數人數，最後一位輪空
-        if (playerPool.length % 2 !== 0) {
-          byeId = playerPool.pop();
-        }
-
-        for (let i = 0; i < playerPool.length; i += 2) {
-          pairs.push({
-            p1: playerPool[i],
-            p2: playerPool[i + 1],
+        if (!shuffle && (roomData.pairs || []).length > 0) {
+          // 不洗牌：維持上一輪的雙人配對
+          newPairs = (roomData.pairs || []).map(p => ({
+            p1: p.p1,
+            p2: p.p2,
             c1: null,
             c2: null
-          });
+          }));
+          byeId = roomData.byePlayerId || null;
+        } else {
+          // 隨機洗牌配對
+          let playerPool = [...pKeys];
+          playerPool.sort(() => Math.random() - 0.5);
+
+          if (playerPool.length % 2 !== 0) {
+            byeId = playerPool.pop();
+          }
+
+          for (let i = 0; i < playerPool.length; i += 2) {
+            newPairs.push({
+              p1: playerPool[i],
+              p2: playerPool[i + 1],
+              c1: null,
+              c2: null
+            });
+          }
         }
 
-        // 清空所有人本輪選擇
+        // 重置所有玩家本輪選擇
         const updatedPlayers = { ...players };
         Object.keys(updatedPlayers).forEach(k => {
           updatedPlayers[k].currentChoice = null;
@@ -168,26 +177,38 @@
         await update(ref(db, `rooms/${roomId}`), {
           status: "PLAYING",
           round: (roomData.round || 1) + (roomData.status === "REVEALED" ? 1 : 0),
-          pairs: pairs,
+          pairs: newPairs,
           byePlayerId: byeId,
           players: updatedPlayers
         });
       };
 
+      // 揭曉並結算此回合，同時記錄演化數據
       const revealResults = async () => {
         if (!roomData || !window.__fb) return;
         const { db, ref, update } = window.__fb;
         const pairs = roomData.pairs || [];
         const players = { ...(roomData.players || {}) };
 
+        let totalCoopA = 0; // 選甲人數
+        let totalDefectB = 0; // 選乙人數
+        let outcomesCount = { "A-A": 0, "A-B": 0, "B-A": 0, "B-B": 0 };
+        let roundScoreSum = 0;
+
         pairs.forEach(pair => {
-          const c1 = players[pair.p1]?.currentChoice || "B"; // 沒選預設防禦
+          const c1 = players[pair.p1]?.currentChoice || "B";
           const c2 = players[pair.p2]?.currentChoice || "B";
           pair.c1 = c1;
           pair.c2 = c2;
 
+          if (c1 === "A") totalCoopA++; else totalDefectB++;
+          if (c2 === "A") totalCoopA++; else totalDefectB++;
+
           const key = `${c1}-${c2}`;
+          if (outcomesCount[key] !== undefined) outcomesCount[key]++;
+
           const outcome = PAYOFF[key] || { score1: 0, score2: 0 };
+          roundScoreSum += (outcome.score1 + outcome.score2);
 
           if (players[pair.p1]) {
             players[pair.p1].score = (players[pair.p1].score || 0) + outcome.score1;
@@ -199,10 +220,30 @@
           }
         });
 
+        const activePlayerCount = pairs.length * 2;
+        const coopRate = activePlayerCount > 0 ? Math.round((totalCoopA / activePlayerCount) * 100) : 0;
+        const avgScore = activePlayerCount > 0 ? Number((roundScoreSum / activePlayerCount).toFixed(1)) : 0;
+
+        // 回合演化紀錄節點
+        const roundSummary = {
+          round: roomData.round || 1,
+          coopRate, // 甲(合作)百分比
+          defectRate: 100 - coopRate, // 乙(自保)百分比
+          coopA: totalCoopA,
+          defectB: totalDefectB,
+          outcomes: outcomesCount,
+          avgScore,
+          timestamp: Date.now()
+        };
+
+        const existingHistory = roomData.history || [];
+        const updatedHistory = [...existingHistory, roundSummary];
+
         await update(ref(db, `rooms/${roomId}`), {
           status: "REVEALED",
           pairs: pairs,
-          players: players
+          players: players,
+          history: updatedHistory
         });
       };
 
@@ -231,7 +272,7 @@
         const updates = {};
         Object.values(players).forEach(p => {
           if (p.isBot && !p.currentChoice) {
-            updates[`rooms/${roomId}/players/${p.id}/currentChoice`] = Math.random() > 0.4 ? "A" : "B";
+            updates[`rooms/${roomId}/players/${p.id}/currentChoice`] = Math.random() > 0.45 ? "A" : "B";
           }
         });
         await update(ref(db), updates);
@@ -270,7 +311,6 @@
         });
       };
 
-      // 取得當前玩家的配對狀況
       const myPair = (roomData?.pairs || []).find(p => p.p1 === playerId || p.p2 === playerId);
       const isBye = roomData?.byePlayerId === playerId;
       const opponentId = myPair ? (myPair.p1 === playerId ? myPair.p2 : myPair.p1) : null;
@@ -283,483 +323,4 @@
       if (!role) {
         return (
           <div className="min-h-screen flex items-center justify-center p-4 bg-slate-900">
-            <div className="w-full max-w-md bg-slate-800/80 border border-slate-700/80 rounded-2xl p-6 sm:p-8 backdrop-blur shadow-2xl">
-              <div className="text-center mb-6">
-                <span className="inline-block px-3 py-1 bg-indigo-500/20 text-indigo-400 text-xs font-semibold rounded-full mb-2">
-                  活動現場互動工具
-                </span>
-                <h1 className="text-2xl font-bold tracking-tight text-white">賽局理論對決</h1>
-                <p className="text-sm text-slate-400 mt-1">囚徒困境實戰 · 即時連線體驗</p>
-              </div>
-
-              {/* 規則速覽區塊 */}
-              <div className="bg-slate-900/60 rounded-xl p-4 border border-slate-700/50 mb-6 text-xs space-y-1.5">
-                <div className="text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  分數計算規則：
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>雙方皆選甲方案 (合作)</span>
-                  <span className="text-emerald-400 font-medium">各 +3 分</span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>一選甲、一選乙 (背叛)</span>
-                  <span><span className="text-rose-400 font-medium">-2 分</span> / <span className="text-amber-400 font-medium">+5 分</span></span>
-                </div>
-                <div className="flex justify-between text-slate-400">
-                  <span>雙方皆選乙方案 (對抗)</span>
-                  <span className="text-slate-300 font-medium">各 +1 分</span>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-xs text-slate-400 font-medium">學員加入</label>
-                  <input
-                    type="text"
-                    placeholder="請輸入 6 碼房間號碼"
-                    value={roomId}
-                    onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-center text-lg tracking-widest uppercase font-mono focus:outline-none focus:border-indigo-500"
-                  />
-                  <input
-                    type="text"
-                    placeholder="請輸入您的名字或代號"
-                    value={playerName}
-                    onChange={(e) => setPlayerName(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-center text-sm focus:outline-none focus:border-indigo-500"
-                  />
-                  <button
-                    onClick={joinRoomAsPlayer}
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] transition text-white font-medium py-2.5 rounded-lg shadow-lg shadow-indigo-600/30"
-                  >
-                    進入房間
-                  </button>
-                </div>
-
-                <div className="relative flex py-2 items-center">
-                  <div className="flex-grow border-t border-slate-700"></div>
-                  <span className="flex-shrink mx-3 text-xs text-slate-500">或</span>
-                  <div className="flex-grow border-t border-slate-700"></div>
-                </div>
-
-                <button
-                  onClick={createRoomAsHost}
-                  className="w-full bg-slate-700/60 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-600 font-medium py-2.5 rounded-lg transition"
-                >
-                  我是講師 / 主持人（建立新房間）
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      // ----------------------------------------------------
-      // 畫面渲染：主持人控台 (Host)
-      // ----------------------------------------------------
-      if (role === "host") {
-        const playersList = Object.values(roomData?.players || {});
-        const pairs = roomData?.pairs || [];
-        const byePlayer = roomData?.byePlayerId ? roomData?.players?.[roomData.byePlayerId] : null;
-        const totalCount = playersList.length;
-        const answeredCount = pairs.filter(p => {
-          const c1 = roomData?.players?.[p.p1]?.currentChoice;
-          const c2 = roomData?.players?.[p.p2]?.currentChoice;
-          return c1 && c2;
-        }).length * 2;
-
-        return (
-          <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto flex flex-col gap-6">
-            {/* 頂部資訊列 */}
-            <header className="flex flex-wrap items-center justify-between gap-4 bg-slate-800/80 p-4 md:p-6 rounded-2xl border border-slate-700/80 shadow-xl">
-              <div>
-                <div className="flex items-center gap-3">
-                  <h1 className="text-xl md:text-2xl font-bold text-white">主持人控制大廳</h1>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
-                    Round {roomData?.round || 1}
-                  </span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${roomData?.status === "REVEALED" ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300"}`}>
-                    {roomData?.status === "LOBBY" ? "等待加入中" : roomData?.status === "PLAYING" ? "決策進行中" : "本輪已揭曉"}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 mt-1">目前加入人數：{totalCount} 人（{Math.floor(totalCount / 2)} 組對決）</p>
-              </div>
-
-              {/* 房號與 QR Code */}
-              <div className="flex items-center gap-4 bg-slate-900/80 p-3 rounded-xl border border-slate-700">
-                <div className="text-right">
-                  <div className="text-xs text-slate-400">房間號碼</div>
-                  <div className="text-2xl md:text-3xl font-mono font-black text-indigo-400 tracking-wider">{roomId}</div>
-                </div>
-                <canvas ref={qrCanvasRef} className="rounded-lg shadow-md bg-white p-1 w-20 h-20 md:w-24 md:h-24"></canvas>
-              </div>
-            </header>
-
-            {/* 控制按鈕列 */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-800/60 p-4 rounded-xl border border-slate-700/60">
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => startNextRound(true)}
-                  className="bg-indigo-600 hover:bg-indigo-500 active:scale-95 px-5 py-2.5 rounded-lg font-medium text-white shadow-lg shadow-indigo-600/25 transition text-sm flex items-center gap-2"
-                >
-                  <span>🎲</span>
-                  <span>{roomData?.status === "LOBBY" ? "自動配對並開局" : "重新洗牌配對下一輪"}</span>
-                </button>
-
-                {roomData?.status === "PLAYING" && (
-                  <button
-                    onClick={revealResults}
-                    className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 px-5 py-2.5 rounded-lg font-medium text-white shadow-lg shadow-emerald-600/25 transition text-sm flex items-center gap-2"
-                  >
-                    <span>⚡</span>
-                    <span>立即揭曉算分</span>
-                  </button>
-                )}
-              </div>
-
-              {/* 帶活動測試利器 */}
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => addTestBots(4)}
-                  className="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs px-3 py-2 rounded-lg transition"
-                >
-                  +4 位模擬學員
-                </button>
-                {roomData?.status === "PLAYING" && (
-                  <button
-                    onClick={autoBotsChoose}
-                    className="bg-slate-700 hover:bg-slate-600 text-amber-300 text-xs px-3 py-2 rounded-lg transition"
-                  >
-                    模擬學員一鍵完成選擇
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* 大廳或對抗監控視圖 */}
-            {roomData?.status === "LOBBY" ? (
-              <div className="bg-slate-800/40 rounded-2xl p-6 border border-slate-700/50 text-center">
-                <h2 className="text-lg font-semibold text-slate-200 mb-2">學員正在進入大廳...</h2>
-                <p className="text-sm text-slate-400 mb-6">請學員使用手機掃描右上角 QR Code 即可加入。人數到齊後點擊「自動配對並開局」。</p>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                  {playersList.map((p, idx) => (
-                    <div key={p.id} className="bg-slate-800 border border-slate-700 p-3 rounded-xl flex items-center gap-2.5 shadow-sm">
-                      <div className="w-8 h-8 rounded-full bg-indigo-600/30 text-indigo-400 font-bold flex items-center justify-center text-xs">
-                        {idx + 1}
-                      </div>
-                      <div className="text-left overflow-hidden">
-                        <div className="text-sm font-medium text-slate-200 truncate">{p.name}</div>
-                        <div className="text-[10px] text-slate-500 font-mono truncate">{p.isBot ? "模擬機器人" : "手機在線"}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* 左側 2/3：對戰監控 */}
-                <div className="lg:col-span-2 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-base font-semibold text-slate-300 flex items-center gap-2">
-                      <span>即時分組對決監控</span>
-                      <span className="text-xs text-slate-400 font-normal">
-                        ({answeredCount} / {pairs.length * 2} 已完成選擇)
-                      </span>
-                    </h2>
-                    {byePlayer && (
-                      <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-full">
-                        輪空觀戰：{byePlayer.name}（因單數人）
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                    {pairs.map((pair, idx) => {
-                      const p1 = roomData.players?.[pair.p1];
-                      const p2 = roomData.players?.[pair.p2];
-                      const isRevealed = roomData.status === "REVEALED";
-                      const outcome = isRevealed ? PAYOFF[`${pair.c1}-${pair.c2}`] : null;
-
-                      return (
-                        <div key={idx} className="bg-slate-800/70 border border-slate-700/80 rounded-xl p-4 shadow-md flex flex-col justify-between">
-                          <div className="flex items-center justify-between text-xs text-slate-400 mb-3 border-b border-slate-700/60 pb-2">
-                            <span className="font-semibold text-slate-300">第 {idx + 1} 組</span>
-                            {isRevealed ? (
-                              <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-medium">
-                                {outcome?.tag}
-                              </span>
-                            ) : (
-                              <span className="text-slate-400">
-                                {p1?.currentChoice && p2?.currentChoice ? "雙方皆已完成" : "等待決策中..."}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-3">
-                            {/* P1 */}
-                            <div className={`p-3 rounded-lg border text-center transition ${p1?.currentChoice ? "bg-indigo-950/40 border-indigo-500/40" : "bg-slate-900/40 border-slate-800"}`}>
-                              <div className="text-xs text-slate-400 truncate">{p1?.name}</div>
-                              <div className="text-sm font-bold mt-1 text-white">
-                                {isRevealed ? (
-                                  <span className={pair.c1 === "A" ? "text-emerald-400" : "text-amber-400"}>
-                                    {pair.c1 === "A" ? "甲方案" : "乙方案"}
-                                  </span>
-                                ) : p1?.currentChoice ? (
-                                  <span className="text-indigo-400 text-xs font-normal">已完成 ✓</span>
-                                ) : (
-                                  <span className="text-slate-500 text-xs font-normal">思考中...</span>
-                                )}
-                              </div>
-                              {isRevealed && (
-                                <div className={`text-xs font-bold mt-1 ${outcome.score1 >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {outcome.label1} 分
-                                </div>
-                              )}
-                            </div>
-
-                            {/* P2 */}
-                            <div className={`p-3 rounded-lg border text-center transition ${p2?.currentChoice ? "bg-indigo-950/40 border-indigo-500/40" : "bg-slate-900/40 border-slate-800"}`}>
-                              <div className="text-xs text-slate-400 truncate">{p2?.name}</div>
-                              <div className="text-sm font-bold mt-1 text-white">
-                                {isRevealed ? (
-                                  <span className={pair.c2 === "A" ? "text-emerald-400" : "text-amber-400"}>
-                                    {pair.c2 === "A" ? "甲方案" : "乙方案"}
-                                  </span>
-                                ) : p2?.currentChoice ? (
-                                  <span className="text-indigo-400 text-xs font-normal">已完成 ✓</span>
-                                ) : (
-                                  <span className="text-slate-500 text-xs font-normal">思考中...</span>
-                                )}
-                              </div>
-                              {isRevealed && (
-                                <div className={`text-xs font-bold mt-1 ${outcome.score2 >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {outcome.label2} 分
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 右側 1/3：排行榜 */}
-                <div className="bg-slate-800/70 border border-slate-700/80 rounded-2xl p-5 shadow-lg flex flex-col">
-                  <h3 className="text-base font-bold text-white mb-3 flex items-center justify-between">
-                    <span>學員累積積分榜</span>
-                    <span className="text-xs text-indigo-400 font-normal">即時更新</span>
-                  </h3>
-                  <div className="divide-y divide-slate-700/60 overflow-y-auto max-h-[600px] pr-1">
-                    {[...playersList]
-                      .sort((a, b) => (b.score || 0) - (a.score || 0))
-                      .map((p, rank) => (
-                        <div key={p.id} className="py-2.5 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <span className={`w-6 text-center font-bold text-sm ${rank === 0 ? "text-amber-400" : rank === 1 ? "text-slate-300" : rank === 2 ? "text-amber-600" : "text-slate-500"}`}>
-                              #{rank + 1}
-                            </span>
-                            <span className="text-sm text-slate-200 font-medium">{p.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {p.lastChange !== undefined && roomData.status === "REVEALED" && (
-                              <span className={`text-xs ${p.lastChange >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                ({p.lastChange >= 0 ? `+${p.lastChange}` : p.lastChange})
-                              </span>
-                            )}
-                            <span className="font-mono font-bold text-base text-white">{p.score || 0} 分</span>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      }
-
-      // ----------------------------------------------------
-      // 畫面渲染：學員手機介面 (Player)
-      // ----------------------------------------------------
-      const myInfo = roomData?.players?.[playerId];
-      const isRevealed = roomData?.status === "REVEALED";
-
-      return (
-        <div className="min-h-screen max-w-md mx-auto p-4 flex flex-col justify-between">
-          {/* 上半部：個人狀態與房號 */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
-              <div>
-                <div className="text-xs text-slate-400">目前學員</div>
-                <div className="text-base font-bold text-white">{myInfo?.name || playerName}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-xs text-slate-400">累積總得分</div>
-                <div className="text-xl font-bold font-mono text-indigo-400">{myInfo?.score || 0} 分</div>
-              </div>
-            </div>
-
-            {/* 損益規則快速查閱按鈕 */}
-            <button
-              onClick={() => setShowRuleModal(true)}
-              className="w-full text-xs text-indigo-400 bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-700/50 py-2 rounded-lg flex items-center justify-center gap-1.5 transition"
-            >
-              <span>ℹ️ 點此查看「甲/乙方案得分規則表」</span>
-            </button>
-
-            {/* 遊戲進行區塊 */}
-            {roomData?.status === "LOBBY" ? (
-              <div className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 text-center space-y-3 mt-6">
-                <div className="w-12 h-12 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto text-xl animate-pulse">
-                  ⏳
-                </div>
-                <h2 className="text-lg font-semibold text-white">已順利進入大廳</h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  請等待講師在前方投影螢幕啟動遊戲。<br />系統將在開局時自動為您兩兩配對。
-                </p>
-                <div className="pt-2 text-xs font-mono text-slate-500">房號：{roomId}</div>
-              </div>
-            ) : isBye ? (
-              <div className="bg-amber-950/30 border border-amber-700/40 rounded-2xl p-6 text-center space-y-2 mt-6">
-                <div className="text-2xl">☕</div>
-                <h3 className="text-base font-semibold text-amber-300">本輪因總人數為單數，您暫時輪空觀戰</h3>
-                <p className="text-xs text-slate-400">請觀摩其他組別的決策心理，下一輪您將被優先配對加入！</p>
-              </div>
-            ) : (
-              <div className="space-y-4 mt-2">
-                {/* 對手狀態卡片 */}
-                <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 text-center">
-                  <div className="text-xs text-slate-400 mb-1">本輪對戰對象</div>
-                  <div className="text-lg font-bold text-slate-200">
-                    {opponent ? opponent.name : "已自動配對同伴"}
-                  </div>
-                  <div className="text-xs text-indigo-400 mt-1">
-                    {roomData?.status === "PLAYING"
-                      ? (opponent?.currentChoice ? "對方已完成選擇，等待您的決定" : "雙方思考決策中...")
-                      : "本輪對決已結束"}
-                  </div>
-                </div>
-
-                {/* 揭曉時的結果 */}
-                {isRevealed && myPair && (
-                  <div className="bg-gradient-to-br from-indigo-900/40 to-purple-900/40 border border-indigo-500/40 rounded-xl p-4 text-center space-y-2">
-                    <div className="text-xs text-indigo-300 font-semibold">【 本輪揭曉結果 】</div>
-                    <div className="flex justify-around items-center py-2">
-                      <div>
-                        <div className="text-xs text-slate-400">您選擇了</div>
-                        <div className="text-lg font-bold text-white">
-                          {myCurrentChoice === "A" ? "甲方案" : "乙方案"}
-                        </div>
-                      </div>
-                      <div className="text-2xl font-bold text-slate-500">VS</div>
-                      <div>
-                        <div className="text-xs text-slate-400">對方選擇了</div>
-                        <div className="text-lg font-bold text-white">
-                          {(myPair.p1 === playerId ? myPair.c2 : myPair.c1) === "A" ? "甲方案" : "乙方案"}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-sm font-bold text-emerald-400 pt-1 border-t border-slate-700">
-                      本輪獲得分數：{myInfo?.lastChange >= 0 ? `+${myInfo?.lastChange}` : myInfo?.lastChange} 分
-                    </div>
-                  </div>
-                )}
-
-                {/* 決策按鈕區 (PLAYING 階段) */}
-                {roomData?.status === "PLAYING" && (
-                  <div className="space-y-3 pt-2">
-                    <div className="text-xs text-center text-slate-400">請點擊下方按鈕做出您的決策（送出前可自由變更）：</div>
-                    <button
-                      onClick={() => submitChoice("A")}
-                      className={`w-full p-4 rounded-xl border text-left flex items-center justify-between transition touch-target ${
-                        myCurrentChoice === "A"
-                          ? "bg-emerald-600/30 border-emerald-500 ring-2 ring-emerald-500/50"
-                          : "bg-slate-800 border-slate-700 hover:border-slate-500 active:scale-[0.98]"
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-base text-emerald-400">選擇：甲方案</div>
-                        <div className="text-xs text-slate-400 mt-0.5">以合作為目標（雙方選甲各得 +3 分）</div>
-                      </div>
-                      {myCurrentChoice === "A" && <span className="text-emerald-400 text-xl font-bold">✓</span>}
-                    </button>
-
-                    <button
-                      onClick={() => submitChoice("B")}
-                      className={`w-full p-4 rounded-xl border text-left flex items-center justify-between transition touch-target ${
-                        myCurrentChoice === "B"
-                          ? "bg-amber-600/30 border-amber-500 ring-2 ring-amber-500/50"
-                          : "bg-slate-800 border-slate-700 hover:border-slate-500 active:scale-[0.98]"
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-base text-amber-400">選擇：乙方案</div>
-                        <div className="text-xs text-slate-400 mt-0.5">以自保/搶分為目標（若對方選甲您獨得 +5 分）</div>
-                      </div>
-                      {myCurrentChoice === "B" && <span className="text-amber-400 text-xl font-bold">✓</span>}
-                    </button>
-
-                    {myCurrentChoice && (
-                      <p className="text-center text-xs text-emerald-400 pt-1">
-                        ✓ 您的決策已儲存，請等待講師在大螢幕公布全班戰況！
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 規則彈窗 */}
-          {showRuleModal && (
-            <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 w-full max-w-sm space-y-4">
-                <h3 className="text-base font-bold text-white text-center">得失分規則矩陣</h3>
-                <div className="overflow-hidden rounded-xl border border-slate-700 text-xs">
-                  <table className="w-full text-center">
-                    <thead className="bg-slate-900 text-slate-400">
-                      <tr>
-                        <th className="p-2 border-r border-slate-700">您 \ 對方</th>
-                        <th className="p-2 border-r border-slate-700 text-emerald-400">對方選甲</th>
-                        <th className="p-2 text-amber-400">對方選乙</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700 bg-slate-800/80">
-                      <tr>
-                        <td className="p-2.5 font-bold border-r border-slate-700 text-emerald-400">您選甲</td>
-                        <td className="p-2.5 border-r border-slate-700 text-emerald-300 font-semibold">+3 / +3</td>
-                        <td className="p-2.5 text-rose-400 font-semibold">-2 / +5</td>
-                      </tr>
-                      <tr>
-                        <td className="p-2.5 font-bold border-r border-slate-700 text-amber-400">您選乙</td>
-                        <td className="p-2.5 border-r border-slate-700 text-amber-300 font-semibold">+5 / -2</td>
-                        <td className="p-2.5 text-slate-300 font-semibold">+1 / +1</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <button
-                  onClick={() => setShowRuleModal(false)}
-                  className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-white text-xs font-medium"
-                >
-                  關閉
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="text-center text-[11px] text-slate-500 py-3">
-            賽局理論互動工作坊 · 實時雲端連線中
-          </div>
-        </div>
-      );
-    }
-
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
-  </script>
-</body>
-</html>
+            <div className="w-full max-w
