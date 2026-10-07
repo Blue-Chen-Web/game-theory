@@ -4,60 +4,84 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>賽局理論互動工作坊 (Game Theory)</title>
-
-  <!-- 純內建 CSS，完全不依賴任何外部 CSS CDN，保證 0 秒加載絕不卡死 -->
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background-color: #0f172a; color: #f8fafc; min-height: 100vh; padding: 12px; }
     .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); max-width: 480px; margin: 0 auto; }
     .host-card { background-color: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; max-width: 1000px; margin: 0 auto; }
-    .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: bold; border: none; cursor: pointer; text-align: center; transition: all 0.15s; }
+    .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: bold; border: none; cursor: pointer; text-align: center; }
     .btn:active { transform: scale(0.98); }
     .btn-primary { background-color: #4f46e5; color: white; margin-top: 10px; }
-    .btn-primary:hover { background-color: #4338ca; }
     .btn-secondary { background-color: #334155; color: #cbd5e1; margin-top: 12px; font-size: 14px; }
-    .btn-secondary:hover { background-color: #475569; }
     .btn-choice-a { background-color: #064e3b; border: 2px solid #059669; color: #a7f3d0; margin-top: 12px; text-align: left; padding: 16px; }
     .btn-choice-b { background-color: #78350f; border: 2px solid #d97706; color: #fde68a; margin-top: 12px; text-align: left; padding: 16px; }
     .btn-selected { outline: 3px solid #38bdf8; box-shadow: 0 0 15px rgba(56,189,248,0.5); }
     .input-field { width: 100%; background: #0f172a; border: 1px solid #475569; color: white; padding: 12px; border-radius: 10px; font-size: 16px; text-align: center; margin-bottom: 10px; }
-    .input-field:focus { outline: none; border-color: #6366f1; }
     .rule-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; text-align: center; }
     .rule-table th, .rule-table td { border: 1px solid #334155; padding: 8px; }
     .rule-table th { background-color: #0f172a; color: #94a3b8; }
     .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; background: #312e81; color: #818cf8; }
-    .status-bar { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 14px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 16px; }
-    .grid-pairs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 14px; }
-    .pair-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 14px; }
+    .pair-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 14px; }
+    .pair-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 12px; }
+    .hidden { display: none !important; }
   </style>
 
-  <!-- 官方 Firebase 庫 -->
+  <!-- 外部 Firebase 與 QR Code (若網路延遲不阻擋畫面) -->
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
 
-  <!-- 連線狀態指示燈 -->
-  <div id="connection-banner" style="max-width: 480px; margin: 0 auto 10px auto; font-size: 11px; text-align: center; color: #64748b;">
-    系統檢測中...
+  <!-- 連線狀態欄 -->
+  <div style="max-width: 480px; margin: 0 auto 8px auto; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
+    <span id="net-status">● 系統已就緒</span>
+    <a href="javascript:void(0)" onclick="clearAndReload()" style="color: #818cf8; text-decoration: none;">[強制清除快取重整]</a>
   </div>
 
-  <div id="main-content">
-    <div class="card" style="text-align: center;">
-      <h2 style="font-size: 18px; margin-bottom: 8px;">頁面載入中...</h2>
-      <p style="font-size: 13px; color: #94a3b8;">如果超過 3 秒沒有反應，請點擊下方強制刷新按鈕：</p>
-      <button class="btn btn-secondary" onclick="forceCleanReset()">清除快取並重整</button>
+  <!-- 主畫面容器：靜態原生 HTML，不等待 JS，進來直接顯示！ -->
+  <div id="view-home" class="card">
+    <div style="text-align: center; margin-bottom: 20px;">
+      <span class="badge">互動現場工具</span>
+      <h1 style="font-size: 24px; margin-top: 8px;">賽局理論對決</h1>
+      <p style="font-size: 13px; color: #94a3b8; margin-top: 4px;">囚徒困境實戰 · 多回合演化</p>
     </div>
+
+    <div style="background: #0f172a; padding: 14px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 20px;">
+      <div style="font-size: 13px; font-weight: bold; color: #cbd5e1; margin-bottom: 6px;">得分計分規則：</div>
+      <table class="rule-table">
+        <tr><th>您 \\ 對方</th><th style="color:#34d399;">對方選甲</th><th style="color:#fbbf24;">對方選乙</th></tr>
+        <tr><td style="color:#34d399; font-weight:bold;">您選甲 (合作)</td><td style="color:#34d399;">+3 / +3</td><td style="color:#f87171;">-2 / +5</td></tr>
+        <tr><td style="color:#fbbf24; font-weight:bold;">您選乙 (自保)</td><td style="color:#fbbf24;">+5 / -2</td><td style="color:#94a3b8;">+1 / +1</td></tr>
+      </table>
+    </div>
+
+    <div>
+      <div style="font-size: 13px; color: #94a3b8; margin-bottom: 6px;">學員加入房間：</div>
+      <input id="input-room" class="input-field" placeholder="請輸入 6 碼房間號碼" />
+      <input id="input-name" class="input-field" placeholder="請輸入您的名字或暱稱" />
+      <button class="btn btn-primary" onclick="handleJoin()">進入房間</button>
+    </div>
+
+    <div style="text-align: center; margin: 18px 0; color: #64748b; font-size: 12px;">─── 或 ───</div>
+
+    <button class="btn btn-secondary" onclick="handleCreateHost()">我是講師 / 主持人（建立新房間）</button>
   </div>
+
+  <!-- 主持人畫面容器 (動態切換) -->
+  <div id="view-host" class="host-card hidden"></div>
+
+  <!-- 學員操作畫面容器 (動態切換) -->
+  <div id="view-player" class="card hidden"></div>
 
   <script>
-    function forceCleanReset() {
+    function clearAndReload() {
       try { localStorage.clear(); } catch(e){}
-      window.location.href = window.location.origin + window.location.pathname;
+      const base = window.location.origin + window.location.pathname;
+      window.location.href = base + "?v=" + Math.floor(Math.random() * 10000);
     }
 
-    // --- 1. Firebase 初始化 ---
+    // --- Firebase 配置 ---
     const firebaseConfig = {
       apiKey: "AIzaSyCdy8u9yX2Ep09MGBR6UB9pTV21Qu4g_BM",
       authDomain: "game-theory-9aaae.firebaseapp.com",
@@ -70,20 +94,397 @@
     };
 
     let db = null;
-    try {
+    function getDB() {
+      if (db) return db;
       if (window.firebase) {
         if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
         db = firebase.database();
-        document.getElementById("connection-banner").innerHTML = "<span style='color:#10b981;'>● 雲端連線正常</span>";
-      } else {
-        document.getElementById("connection-banner").innerHTML = "<span style='color:#f43f5e;'>✕ Firebase 庫未能載入，請確認網絡</span>";
+        document.getElementById("net-status").innerHTML = "<span style='color:#10b981;'>● 雲端連線正常</span>";
+        return db;
       }
-    } catch(err) {
-      console.error(err);
-      document.getElementById("connection-banner").innerHTML = "<span style='color:#f43f5e;'>✕ 連線異常：" + err.message + "</span>";
+      return null;
     }
+
+    // 檢查 URL 房號
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get("room")) {
+        document.getElementById("input-room").value = urlParams.get("room").toUpperCase().trim();
+      }
+      const savedName = localStorage.getItem("gt_user_name");
+      if (savedName) document.getElementById("input-name").value = savedName;
+    } catch(e){}
 
     const PAYOFF = {
       "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作" },
       "A-B": { score1: -2, score2: 5, label1: "-2", label2: "+5", tag: "背叛獲利" },
-      "B-A": { score1
+      "B-A": { score1: 5, score2: -2, label1: "+5", label2: "-2", tag: "背叛獲利" },
+      "B-B": { score1: 1, score2: 1, label1: "+1", label2: "+1", tag: "相互對立" }
+    };
+
+    let currentRole = null; // 'host' | 'player'
+    let currentRoomId = "";
+    let currentPlayerId = "p_" + Math.random().toString(36).substring(2, 9);
+    let currentPlayerName = "";
+    let roomListenerRef = null;
+
+    function switchView(viewName) {
+      document.getElementById("view-home").classList.add("hidden");
+      document.getElementById("view-host").classList.add("hidden");
+      document.getElementById("view-player").classList.add("hidden");
+      if (viewName === "home") document.getElementById("view-home").classList.remove("hidden");
+      if (viewName === "host") document.getElementById("view-host").classList.remove("hidden");
+      if (viewName === "player") document.getElementById("view-player").classList.remove("hidden");
+    }
+
+    function exitToHome() {
+      if (roomListenerRef) roomListenerRef.off();
+      currentRole = null;
+      currentRoomId = "";
+      window.history.replaceState({}, "", window.location.pathname);
+      switchView("home");
+    }
+
+    // --- 主持人指令 ---
+    async function handleCreateHost() {
+      const database = getDB();
+      if (!database) { alert("連線伺服器中，請稍候 3 秒再點擊！"); return; }
+
+      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+      await database.ref("rooms/" + code).set({
+        id: code,
+        status: "LOBBY",
+        round: 1,
+        players: {},
+        pairs: [],
+        byePlayerId: null,
+        history: []
+      });
+
+      currentRole = "host";
+      currentRoomId = code;
+      switchView("host");
+      bindRoom(code);
+    }
+
+    async function hostStartRound(shuffle) {
+      const database = getDB();
+      if (!database || !currentRoomId) return;
+      const snap = await database.ref("rooms/" + currentRoomId).once("value");
+      const room = snap.val();
+      if (!room) return;
+
+      const players = room.players || {};
+      const keys = Object.keys(players);
+      if (keys.length < 2) {
+        alert("至少需要 2 位學員加入才能開始！");
+        return;
+      }
+
+      let newPairs = [];
+      let byeId = null;
+
+      if (!shuffle && (room.pairs || []).length > 0) {
+        newPairs = room.pairs.map(p => ({ p1: p.p1, p2: p.p2, c1: null, c2: null }));
+        byeId = room.byePlayerId || null;
+      } else {
+        let pool = [...keys].sort(() => Math.random() - 0.5);
+        if (pool.length % 2 !== 0) byeId = pool.pop();
+        for (let i = 0; i < pool.length; i += 2) {
+          newPairs.push({ p1: pool[i], p2: pool[i + 1], c1: null, c2: null });
+        }
+      }
+
+      const updated = { ...players };
+      Object.keys(updated).forEach(k => { if (updated[k]) updated[k].currentChoice = null; });
+
+      await database.ref("rooms/" + currentRoomId).update({
+        status: "PLAYING",
+        round: (room.round || 1) + (room.status === "REVEALED" ? 1 : 0),
+        pairs: newPairs,
+        byePlayerId: byeId,
+        players: updated
+      });
+    }
+
+    async function hostReveal() {
+      const database = getDB();
+      if (!database || !currentRoomId) return;
+      const snap = await database.ref("rooms/" + currentRoomId).once("value");
+      const room = snap.val();
+      if (!room) return;
+
+      const pairs = room.pairs || [];
+      const players = { ...(room.players || {}) };
+      let coopA = 0;
+      let outcomes = { "A-A": 0, "A-B": 0, "B-A": 0, "B-B": 0 };
+
+      pairs.forEach(pair => {
+        const c1 = players[pair.p1]?.currentChoice || "B";
+        const c2 = players[pair.p2]?.currentChoice || "B";
+        pair.c1 = c1; pair.c2 = c2;
+        if (c1 === "A") coopA++;
+        if (c2 === "A") coopA++;
+
+        const key = c1 + "-" + c2;
+        if (outcomes[key] !== undefined) outcomes[key]++;
+        const res = PAYOFF[key] || { score1: 0, score2: 0 };
+
+        if (players[pair.p1]) {
+          players[pair.p1].score = (players[pair.p1].score || 0) + res.score1;
+          players[pair.p1].lastChange = res.score1;
+        }
+        if (players[pair.p2]) {
+          players[pair.p2].score = (players[pair.p2].score || 0) + res.score2;
+          players[pair.p2].lastChange = res.score2;
+        }
+      });
+
+      const totalActive = pairs.length * 2;
+      const coopRate = totalActive > 0 ? Math.round((coopA / totalActive) * 100) : 0;
+      const summary = { round: room.round || 1, coopRate, defectRate: 100 - coopRate, outcomes };
+      const history = [...(room.history || []), summary];
+
+      await database.ref("rooms/" + currentRoomId).update({
+        status: "REVEALED",
+        pairs,
+        players,
+        history
+      });
+    }
+
+    async function hostAddBots() {
+      const database = getDB();
+      if (!database || !currentRoomId) return;
+      const snap = await database.ref("rooms/" + currentRoomId + "/players").once("value");
+      const current = Object.keys(snap.val() || {}).length;
+      const updates = {};
+      for (let i = 1; i <= 4; i++) {
+        const bid = "bot_" + Date.now() + "_" + i;
+        updates["rooms/" + currentRoomId + "/players/" + bid] = {
+          id: bid,
+          name: "模擬學員" + (current + i),
+          score: 0,
+          isBot: true,
+          currentChoice: null
+        };
+      }
+      await database.ref().update(updates);
+    }
+
+    async function hostBotsChoose() {
+      const database = getDB();
+      if (!database || !currentRoomId) return;
+      const snap = await database.ref("rooms/" + currentRoomId + "/players").once("value");
+      const players = snap.val() || {};
+      const updates = {};
+      Object.values(players).forEach(p => {
+        if (p?.isBot && !p?.currentChoice) {
+          updates["rooms/" + currentRoomId + "/players/" + p.id + "/currentChoice"] = Math.random() > 0.45 ? "A" : "B";
+        }
+      });
+      await database.ref().update(updates);
+    }
+
+    // --- 學員指令 ---
+    async function handleJoin() {
+      const database = getDB();
+      if (!database) { alert("正在連接雲端，請稍後 3 秒再點擊！"); return; }
+
+      const rid = document.getElementById("input-room").value.trim().toUpperCase();
+      const name = document.getElementById("input-name").value.trim();
+      if (!rid || !name) { alert("請輸入 6 碼房號與名字！"); return; }
+
+      try {
+        const snap = await database.ref("rooms/" + rid).once("value");
+        if (!snap.exists()) { alert("找不到該房間，請核對房號！"); return; }
+
+        currentRole = "player";
+        currentRoomId = rid;
+        currentPlayerName = name;
+        localStorage.setItem("gt_user_name", name);
+
+        await database.ref("rooms/" + rid + "/players/" + currentPlayerId).update({
+          id: currentPlayerId,
+          name: name,
+          score: 0,
+          currentChoice: null
+        });
+
+        switchView("player");
+        bindRoom(rid);
+      } catch(e) {
+        alert("加入失敗：" + e.message);
+      }
+    }
+
+    async function handleChoose(opt) {
+      const database = getDB();
+      if (!database || !currentRoomId) return;
+      await database.ref("rooms/" + currentRoomId + "/players/" + currentPlayerId).update({
+        currentChoice: opt
+      });
+    }
+
+    // --- 實時監聽與渲染 ---
+    function bindRoom(rid) {
+      const database = getDB();
+      if (!database) return;
+      if (roomListenerRef) roomListenerRef.off();
+      roomListenerRef = database.ref("rooms/" + rid);
+
+      roomListenerRef.on("value", snapshot => {
+        const room = snapshot.val();
+        if (!room) {
+          if (currentRole === "player") { alert("房間已關閉！"); exitToHome(); }
+          return;
+        }
+
+        if (currentRole === "host") renderHost(room);
+        if (currentRole === "player") renderPlayer(room);
+      });
+    }
+
+    function renderHost(room) {
+      const hostEl = document.getElementById("view-host");
+      const players = Object.values(room.players || {});
+      const pairs = room.pairs || [];
+      const bye = room.byePlayerId ? room.players?.[room.byePlayerId] : null;
+      const history = room.history || [];
+
+      hostEl.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #334155; padding-bottom:16px; margin-bottom:16px;">
+          <div>
+            <h1 style="font-size:22px;">主持人控制中心</h1>
+            <div style="font-size:13px; color:#94a3b8; margin-top:4px;">
+              狀態：<span style="color:#38bdf8; font-weight:bold;">${room.status === "LOBBY" ? "等待學員加入" : room.status === "PLAYING" ? "第 " + room.round + " 回合進行中" : "第 " + room.round + " 回合已揭曉"}</span>
+              · 共 ${players.length} 人在線
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; background:#0f172a; padding:10px 14px; border-radius:12px; border:1px solid #334155;">
+            <div style="text-align:right;">
+              <div style="font-size:11px; color:#94a3b8;">房間代碼</div>
+              <div style="font-size:24px; font-weight:900; color:#818cf8; font-family:monospace;">${currentRoomId}</div>
+            </div>
+            <canvas id="qr-host" style="width:70px; height:70px; background:white; border-radius:8px; padding:4px;"></canvas>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px;">
+          ${room.status === "LOBBY" ? `
+            <button class="btn btn-primary" style="width:auto; padding:10px 20px;" onclick="hostStartRound(true)">🎲 自動配對並開局</button>
+          ` : `
+            <button class="btn" style="background:#0284c7; color:white; width:auto; padding:10px 18px;" onclick="hostStartRound(false)">🔄 維持原配對下一輪 (不洗牌)</button>
+            <button class="btn btn-primary" style="width:auto; padding:10px 18px;" onclick="hostStartRound(true)">🎲 重新洗牌下一輪</button>
+          `}
+          ${room.status === "PLAYING" ? `
+            <button class="btn" style="background:#059669; color:white; width:auto; padding:10px 20px;" onclick="hostReveal()">⚡ 立即揭曉算分</button>
+          ` : ''}
+          <button class="btn btn-secondary" style="width:auto; padding:10px 14px;" onclick="hostAddBots()">+4 位模擬學員</button>
+          ${room.status === "PLAYING" ? `<button class="btn btn-secondary" style="width:auto; padding:10px 14px; color:#fbbf24;" onclick="hostBotsChoose()">模擬學員一鍵完成選擇</button>` : ''}
+          <button class="btn btn-secondary" style="width:auto; padding:10px 14px; color:#f87171;" onclick="exitToHome()">退出控台</button>
+        </div>
+
+        ${room.status === "LOBBY" ? `
+          <div style="background:#0f172a; padding:24px; border-radius:12px; text-align:center;">
+            <h3 style="font-size:16px;">學員加入名單 (${players.length} 人)</h3>
+            <p style="font-size:12px; color:#94a3b8; margin:6px 0 16px 0;">請學員掃描右上角 QR Code 即可進入</p>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center;">
+              ${players.map(p => `<div style="background:#1e293b; border:1px solid #334155; padding:8px 14px; border-radius:8px; font-size:13px;">${p.name}</div>`).join('')}
+            </div>
+          </div>
+        ` : `
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:16px;">
+            <div>
+              <div style="font-size:14px; font-weight:bold; margin-bottom:8px;">
+                對戰分組監控 ${bye ? `<span style="font-size:12px; color:#fbbf24;">[單數輪空：${bye.name}]</span>` : ''}
+              </div>
+              <div class="pair-grid">
+                ${pairs.map((pair, idx) => {
+                  const p1 = room.players?.[pair.p1];
+                  const p2 = room.players?.[pair.p2];
+                  const rev = room.status === "REVEALED";
+                  const out = rev ? PAYOFF[pair.c1 + "-" + pair.c2] : null;
+                  return `
+                    <div class="pair-box">
+                      <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:8px;">
+                        <span>第 ${idx+1} 組</span>
+                        <span>${rev ? out?.tag : (p1?.currentChoice && p2?.currentChoice ? '雙方已選定' : '等待決策...')}</span>
+                      </div>
+                      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; text-align:center;">
+                        <div style="background:#1e293b; padding:8px; border-radius:8px;">
+                          <div style="font-size:12px; color:#cbd5e1;">${p1?.name || '學員'}</div>
+                          <div style="font-weight:bold; margin-top:4px; color:${rev ? (pair.c1==='A'?'#34d399':'#fbbf24') : '#818cf8'}">
+                            ${rev ? (pair.c1==='A'?'甲方案':'乙方案') : (p1?.currentChoice ? '已選 ✓' : '...')}
+                          </div>
+                          ${rev && out ? `<div style="font-size:11px; margin-top:2px; color:${out.score1>=0?'#34d399':'#f87171'}">${out.label1} 分</div>` : ''}
+                        </div>
+                        <div style="background:#1e293b; padding:8px; border-radius:8px;">
+                          <div style="font-size:12px; color:#cbd5e1;">${p2?.name || '學員'}</div>
+                          <div style="font-weight:bold; margin-top:4px; color:${rev ? (pair.c2==='A'?'#34d399':'#fbbf24') : '#818cf8'}">
+                            ${rev ? (pair.c2==='A'?'甲方案':'乙方案') : (p2?.currentChoice ? '已選 ✓' : '...')}
+                          </div>
+                          ${rev && out ? `<div style="font-size:11px; margin-top:2px; color:${out.score2>=0?'#34d399':'#f87171'}">${out.label2} 分</div>` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <!-- 排行榜 -->
+            <div style="background:#0f172a; padding:14px; border-radius:12px; border:1px solid #334155;">
+              <div style="font-size:14px; font-weight:bold; margin-bottom:10px;">總積分排行榜</div>
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                ${[...players].sort((a,b) => (b.score||0)-(a.score||0)).map((p, r) => `
+                  <div style="display:flex; justify-content:space-between; font-size:13px; border-bottom:1px solid #1e293b; padding-bottom:4px;">
+                    <span>#${r+1}${p.name}</span>
+                    <span style="font-weight:bold; font-family:monospace; color:#38bdf8;">${p.score||0} 分</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        `}
+
+        ${history.length > 0 ? `
+          <div style="margin-top:24px; background:#0f172a; padding:16px; border-radius:12px; border:1px solid #334155;">
+            <div style="font-size:14px; font-weight:bold; margin-bottom:10px;">📈 各回合全場合作率 (選甲) 走勢</div>
+            <div style="display:flex; gap:12px; overflow-x:auto;">
+              ${history.map(h => `
+                <div style="background:#1e293b; border:1px solid #334155; padding:10px; border-radius:8px; min-width:110px; text-align:center;">
+                  <div style="font-size:12px; color:#94a3b8;">第 ${h.round} 輪</div>
+                  <div style="font-size:18px; font-weight:900; color:#34d399; margin:4px 0;">${h.coopRate}%</div>
+                  <div style="font-size:10px; color:#cbd5e1;">合作比例</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      `;
+
+      setTimeout(() => {
+        const qrCanvas = document.getElementById("qr-host");
+        if (qrCanvas && window.QRCode) {
+          const joinUrl = window.location.origin + window.location.pathname + "?room=" + currentRoomId;
+          window.QRCode.toCanvas(qrCanvas, joinUrl, { width: 70, margin: 0 });
+        }
+      }, 50);
+    }
+
+    function renderPlayer(room) {
+      const playerEl = document.getElementById("view-player");
+      const me = room.players?.[currentPlayerId];
+      const isRevealed = room.status === "REVEALED";
+      const myPair = (room.pairs || []).find(p => p.p1 === currentPlayerId || p.p2 === currentPlayerId);
+      const isBye = room.byePlayerId === currentPlayerId;
+      const opponentId = myPair ? (myPair.p1 === currentPlayerId ? myPair.p2 : myPair.p1) : null;
+      const opponent = opponentId ? room.players?.[opponentId] : null;
+      const myChoice = me?.currentChoice;
+
+      playerEl.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; padding:10px 14px; border-radius:12px; border:1px solid #334155; margin-bottom:16px;">
+          <div>
+            <div style="font-size:11px; color:#94a3b8;">目前學員</div>
+            <div style="font-size:1
