@@ -5,55 +5,58 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>賽局理論互動工作坊 (Game Theory)</title>
 
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- QR Code 產生庫 -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <!-- 純內建 CSS，完全不依賴任何外部 CSS CDN，保證 0 秒加載絕不卡死 -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #0f172a; color: #f8fafc; min-height: 100vh; padding: 12px; }
+    .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.4); max-width: 480px; margin: 0 auto; }
+    .host-card { background-color: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 20px; max-width: 1000px; margin: 0 auto; }
+    .btn { display: block; width: 100%; padding: 14px; border-radius: 12px; font-size: 16px; font-weight: bold; border: none; cursor: pointer; text-align: center; transition: all 0.15s; }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background-color: #4f46e5; color: white; margin-top: 10px; }
+    .btn-primary:hover { background-color: #4338ca; }
+    .btn-secondary { background-color: #334155; color: #cbd5e1; margin-top: 12px; font-size: 14px; }
+    .btn-secondary:hover { background-color: #475569; }
+    .btn-choice-a { background-color: #064e3b; border: 2px solid #059669; color: #a7f3d0; margin-top: 12px; text-align: left; padding: 16px; }
+    .btn-choice-b { background-color: #78350f; border: 2px solid #d97706; color: #fde68a; margin-top: 12px; text-align: left; padding: 16px; }
+    .btn-selected { outline: 3px solid #38bdf8; box-shadow: 0 0 15px rgba(56,189,248,0.5); }
+    .input-field { width: 100%; background: #0f172a; border: 1px solid #475569; color: white; padding: 12px; border-radius: 10px; font-size: 16px; text-align: center; margin-bottom: 10px; }
+    .input-field:focus { outline: none; border-color: #6366f1; }
+    .rule-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; text-align: center; }
+    .rule-table th, .rule-table td { border: 1px solid #334155; padding: 8px; }
+    .rule-table th { background-color: #0f172a; color: #94a3b8; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; background: #312e81; color: #818cf8; }
+    .status-bar { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 14px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 16px; }
+    .grid-pairs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 14px; }
+    .pair-box { background: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 14px; }
+  </style>
 
-  <!-- 穩定版 Firebase 官方庫 -->
+  <!-- 官方 Firebase 庫 -->
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
-
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .touch-target { -webkit-tap-highlight-color: transparent; }
-  </style>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
-  <div id="app" class="w-full min-h-screen"></div>
+<body>
 
-  <!-- 規則彈窗 -->
-  <div id="rule-modal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
-    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 w-full max-w-sm space-y-4">
-      <h3 class="text-base font-bold text-white text-center">得失分規則矩陣</h3>
-      <div class="overflow-hidden rounded-xl border border-slate-700 text-xs">
-        <table class="w-full text-center">
-          <thead class="bg-slate-900 text-slate-400">
-            <tr>
-              <th class="p-2 border-r border-slate-700">您 \ 對方</th>
-              <th class="p-2 border-r border-slate-700 text-emerald-400">對方選甲</th>
-              <th class="p-2 text-amber-400">對方選乙</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-700 bg-slate-800/80">
-            <tr>
-              <td class="p-2.5 font-bold border-r border-slate-700 text-emerald-400">您選甲</td>
-              <td class="p-2.5 border-r border-slate-700 text-emerald-300 font-semibold">+3 / +3</td>
-              <td class="p-2.5 text-rose-400 font-semibold">-2 / +5</td>
-            </tr>
-            <tr>
-              <td class="p-2.5 font-bold border-r border-slate-700 text-amber-400">您選乙</td>
-              <td class="p-2.5 border-r border-slate-700 text-amber-300 font-semibold">+5 / -2</td>
-              <td class="p-2.5 text-slate-300 font-semibold">+1 / +1</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <button onclick="toggleRuleModal(false)" class="w-full py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-white text-xs font-medium">關閉</button>
+  <!-- 連線狀態指示燈 -->
+  <div id="connection-banner" style="max-width: 480px; margin: 0 auto 10px auto; font-size: 11px; text-align: center; color: #64748b;">
+    系統檢測中...
+  </div>
+
+  <div id="main-content">
+    <div class="card" style="text-align: center;">
+      <h2 style="font-size: 18px; margin-bottom: 8px;">頁面載入中...</h2>
+      <p style="font-size: 13px; color: #94a3b8;">如果超過 3 秒沒有反應，請點擊下方強制刷新按鈕：</p>
+      <button class="btn btn-secondary" onclick="forceCleanReset()">清除快取並重整</button>
     </div>
   </div>
 
   <script>
+    function forceCleanReset() {
+      try { localStorage.clear(); } catch(e){}
+      window.location.href = window.location.origin + window.location.pathname;
+    }
+
     // --- 1. Firebase 初始化 ---
     const firebaseConfig = {
       apiKey: "AIzaSyCdy8u9yX2Ep09MGBR6UB9pTV21Qu4g_BM",
@@ -66,82 +69,21 @@
       measurementId: "G-PF713E3SNT"
     };
 
-    let db;
+    let db = null;
     try {
-      if (!firebase.apps.length) {
-        firebase.initializeApp(firebaseConfig);
+      if (window.firebase) {
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+        document.getElementById("connection-banner").innerHTML = "<span style='color:#10b981;'>● 雲端連線正常</span>";
+      } else {
+        document.getElementById("connection-banner").innerHTML = "<span style='color:#f43f5e;'>✕ Firebase 庫未能載入，請確認網絡</span>";
       }
-      db = firebase.database();
-    } catch (e) {
-      console.error("Firebase Init Error:", e);
-      document.getElementById("app").innerHTML = `<div class="p-6 text-center text-rose-400 text-sm">Firebase 初始化異常: ${e.message}</div>`;
+    } catch(err) {
+      console.error(err);
+      document.getElementById("connection-banner").innerHTML = "<span style='color:#f43f5e;'>✕ 連線異常：" + err.message + "</span>";
     }
 
     const PAYOFF = {
       "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作" },
       "A-B": { score1: -2, score2: 5, label1: "-2", label2: "+5", tag: "背叛獲利" },
-      "B-A": { score1: 5, score2: -2, label1: "+5", label2: "-2", tag: "背叛獲利" },
-      "B-B": { score1: 1, score2: 1, label1: "+1", label2: "+1", tag: "相互對立" }
-    };
-
-    // 全域狀態
-    let state = {
-      role: null, // 'host' | 'player'
-      roomId: "",
-      playerName: localStorage.getItem("gt_pname_v3") || "",
-      playerId: localStorage.getItem("gt_pid_v3") || ("p_" + Math.random().toString(36).substring(2, 9)),
-      roomData: null
-    };
-    localStorage.setItem("gt_pid_v3", state.playerId);
-
-    // 檢查網址是否有自帶 room
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get("room")) {
-      state.roomId = urlParams.get("room").toUpperCase().trim();
-    }
-
-    function toggleRuleModal(show) {
-      const modal = document.getElementById("rule-modal");
-      if (show) {
-        modal.classList.remove("hidden");
-        modal.classList.add("flex");
-      } else {
-        modal.classList.add("hidden");
-        modal.classList.remove("flex");
-      }
-    }
-
-    // 監聽 Firebase 資料
-    let activeListenerRef = null;
-    function subscribeToRoom(code) {
-      if (activeListenerRef) activeListenerRef.off();
-      activeListenerRef = db.ref("rooms/" + code);
-      activeListenerRef.on("value", (snapshot) => {
-        const val = snapshot.val();
-        if (!val) {
-          if (state.role === "player") {
-            alert("房間已解散或不存在！");
-            exitRoom();
-          }
-          return;
-        }
-        state.roomData = val;
-        render();
-      }, (err) => {
-        console.error("Database error:", err);
-      });
-    }
-
-    // 退出
-    function exitRoom() {
-      if (activeListenerRef) activeListenerRef.off();
-      state.role = null;
-      state.roomData = null;
-      const url = new URL(window.location.href);
-      url.search = "";
-      window.history.replaceState({}, "", url.toString());
-      render();
-    }
-
-    // --- 主持人指令 ---
-    async function createRoom
+      "B-A": { score1
