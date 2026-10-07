@@ -5,17 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>賽局理論互動工作坊 (Game Theory)</title>
 
-  <!-- 1. 樣式與工具庫 (穩定 CDN) -->
+  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- QR Code 產生庫 -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 
-  <!-- 2. Firebase Compat 庫 (同步保證，絕不延遲打架) -->
+  <!-- 穩定版 Firebase 官方庫 -->
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
-
-  <!-- 3. React 18 穩定版 -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -23,15 +20,41 @@
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
-  <div id="root">
-    <!-- 預載保護畫面，避免載入瞬間閃爍白屏 -->
-    <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 14px;">
-      正在連線至遊戲伺服器...
+  <div id="app" class="w-full min-h-screen"></div>
+
+  <!-- 規則彈窗 -->
+  <div id="rule-modal" class="fixed inset-0 bg-black/80 hidden items-center justify-center p-4 z-50">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 w-full max-w-sm space-y-4">
+      <h3 class="text-base font-bold text-white text-center">得失分規則矩陣</h3>
+      <div class="overflow-hidden rounded-xl border border-slate-700 text-xs">
+        <table class="w-full text-center">
+          <thead class="bg-slate-900 text-slate-400">
+            <tr>
+              <th class="p-2 border-r border-slate-700">您 \ 對方</th>
+              <th class="p-2 border-r border-slate-700 text-emerald-400">對方選甲</th>
+              <th class="p-2 text-amber-400">對方選乙</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-700 bg-slate-800/80">
+            <tr>
+              <td class="p-2.5 font-bold border-r border-slate-700 text-emerald-400">您選甲</td>
+              <td class="p-2.5 border-r border-slate-700 text-emerald-300 font-semibold">+3 / +3</td>
+              <td class="p-2.5 text-rose-400 font-semibold">-2 / +5</td>
+            </tr>
+            <tr>
+              <td class="p-2.5 font-bold border-r border-slate-700 text-amber-400">您選乙</td>
+              <td class="p-2.5 border-r border-slate-700 text-amber-300 font-semibold">+5 / -2</td>
+              <td class="p-2.5 text-slate-300 font-semibold">+1 / +1</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <button onclick="toggleRuleModal(false)" class="w-full py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-white text-xs font-medium">關閉</button>
     </div>
   </div>
 
   <script>
-    // --- 1. 初始化 Firebase (立即同步生效) ---
+    // --- 1. Firebase 初始化 ---
     const firebaseConfig = {
       apiKey: "AIzaSyCdy8u9yX2Ep09MGBR6UB9pTV21Qu4g_BM",
       authDomain: "game-theory-9aaae.firebaseapp.com",
@@ -43,12 +66,17 @@
       measurementId: "G-PF713E3SNT"
     };
 
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
+    let db;
+    try {
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      db = firebase.database();
+    } catch (e) {
+      console.error("Firebase Init Error:", e);
+      document.getElementById("app").innerHTML = `<div class="p-6 text-center text-rose-400 text-sm">Firebase 初始化異常: ${e.message}</div>`;
     }
-    const db = firebase.database();
 
-    // --- 2. 得失分矩陣 ---
     const PAYOFF = {
       "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作" },
       "A-B": { score1: -2, score2: 5, label1: "-2", label2: "+5", tag: "背叛獲利" },
@@ -56,177 +84,64 @@
       "B-B": { score1: 1, score2: 1, label1: "+1", label2: "+1", tag: "相互對立" }
     };
 
-    const e = React.createElement;
-    const { useState, useEffect, useRef } = React;
+    // 全域狀態
+    let state = {
+      role: null, // 'host' | 'player'
+      roomId: "",
+      playerName: localStorage.getItem("gt_pname_v3") || "",
+      playerId: localStorage.getItem("gt_pid_v3") || ("p_" + Math.random().toString(36).substring(2, 9)),
+      roomData: null
+    };
+    localStorage.setItem("gt_pid_v3", state.playerId);
 
-    function App() {
-      const [role, setRole] = useState(null); // 'host' | 'player'
-      const [roomId, setRoomId] = useState("");
-      const [playerName, setPlayerName] = useState("");
-      const [playerId, setPlayerId] = useState("");
-      const [roomData, setRoomData] = useState(null);
-      const [showRuleModal, setShowRuleModal] = useState(false);
-      const qrCanvasRef = useRef(null);
+    // 檢查網址是否有自帶 room
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("room")) {
+      state.roomId = urlParams.get("room").toUpperCase().trim();
+    }
 
-      // 載入時處理 URL 與 playerId
-      useEffect(() => {
-        try {
-          const params = new URLSearchParams(window.location.search);
-          const r = params.get("room");
-          if (r) setRoomId(r.toUpperCase().trim());
+    function toggleRuleModal(show) {
+      const modal = document.getElementById("rule-modal");
+      if (show) {
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+      } else {
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+      }
+    }
 
-          let pid = localStorage.getItem("gt_v2_pid");
-          if (!pid) {
-            pid = "p_" + Math.random().toString(36).substring(2, 9);
-            localStorage.setItem("gt_v2_pid", pid);
+    // 監聽 Firebase 資料
+    let activeListenerRef = null;
+    function subscribeToRoom(code) {
+      if (activeListenerRef) activeListenerRef.off();
+      activeListenerRef = db.ref("rooms/" + code);
+      activeListenerRef.on("value", (snapshot) => {
+        const val = snapshot.val();
+        if (!val) {
+          if (state.role === "player") {
+            alert("房間已解散或不存在！");
+            exitRoom();
           }
-          setPlayerId(pid);
-
-          const savedName = localStorage.getItem("gt_v2_name");
-          if (savedName) setPlayerName(savedName);
-        } catch (err) {
-          console.error("Init Error:", err);
-        }
-      }, []);
-
-      // 監聽 Firebase 資料
-      useEffect(() => {
-        if (!roomId) return;
-        const roomRef = db.ref("rooms/" + roomId);
-
-        const listener = (snapshot) => {
-          const val = snapshot.val();
-          if (!val) {
-            if (role === "player") {
-              alert("該房間已關閉或不存在，為您返回首頁！");
-              handleExit();
-            }
-            return;
-          }
-          setRoomData(val);
-        };
-
-        roomRef.on("value", listener);
-        return () => roomRef.off("value", listener);
-      }, [roomId, role]);
-
-      // 繪製 QR Code
-      useEffect(() => {
-        if (role === "host" && roomId && qrCanvasRef.current && window.QRCode) {
-          const joinUrl = window.location.origin + window.location.pathname + "?room=" + roomId;
-          window.QRCode.toCanvas(qrCanvasRef.current, joinUrl, {
-            width: 150,
-            margin: 1,
-            color: { dark: "#0f172a", light: "#f8fafc" }
-          });
-        }
-      }, [role, roomId, roomData ? roomData.status : null]);
-
-      const handleExit = () => {
-        setRole(null);
-        setRoomData(null);
-        const url = new URL(window.location.href);
-        url.search = "";
-        window.history.replaceState({}, "", url.toString());
-      };
-
-      // 主持人：建立房間
-      const createRoomAsHost = async () => {
-        const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const initialRoom = {
-          id: code,
-          createdAt: Date.now(),
-          status: "LOBBY",
-          round: 1,
-          players: {},
-          pairs: [],
-          byePlayerId: null,
-          history: []
-        };
-        await db.ref("rooms/" + code).set(initialRoom);
-        setRoomId(code);
-        setRole("host");
-      };
-
-      // 主持人：開局或下一輪
-      const startNextRound = async (shuffle) => {
-        if (!roomData) return;
-        const players = roomData.players || {};
-        const pKeys = Object.keys(players);
-
-        if (pKeys.length < 2) {
-          alert("至少需要 2 位學員加入才能開始！");
           return;
         }
+        state.roomData = val;
+        render();
+      }, (err) => {
+        console.error("Database error:", err);
+      });
+    }
 
-        let newPairs = [];
-        let byeId = null;
+    // 退出
+    function exitRoom() {
+      if (activeListenerRef) activeListenerRef.off();
+      state.role = null;
+      state.roomData = null;
+      const url = new URL(window.location.href);
+      url.search = "";
+      window.history.replaceState({}, "", url.toString());
+      render();
+    }
 
-        if (!shuffle && (roomData.pairs || []).length > 0) {
-          // 不洗牌
-          newPairs = (roomData.pairs || []).map(p => ({
-            p1: p.p1,
-            p2: p.p2,
-            c1: null,
-            c2: null
-          }));
-          byeId = roomData.byePlayerId || null;
-        } else {
-          // 重新隨機洗牌
-          let pool = [...pKeys];
-          pool.sort(() => Math.random() - 0.5);
-
-          if (pool.length % 2 !== 0) {
-            byeId = pool.pop();
-          }
-
-          for (let i = 0; i < pool.length; i += 2) {
-            newPairs.push({
-              p1: pool[i],
-              p2: pool[i + 1],
-              c1: null,
-              c2: null
-            });
-          }
-        }
-
-        const updatedPlayers = { ...players };
-        Object.keys(updatedPlayers).forEach(k => {
-          if (updatedPlayers[k]) {
-            updatedPlayers[k].currentChoice = null;
-          }
-        });
-
-        await db.ref("rooms/" + roomId).update({
-          status: "PLAYING",
-          round: (roomData.round || 1) + (roomData.status === "REVEALED" ? 1 : 0),
-          pairs: newPairs,
-          byePlayerId: byeId,
-          players: updatedPlayers
-        });
-      };
-
-      // 主持人：揭曉算分
-      const revealResults = async () => {
-        if (!roomData) return;
-        const pairs = roomData.pairs || [];
-        const players = { ...(roomData.players || {}) };
-
-        let totalCoopA = 0;
-        let totalDefectB = 0;
-        let outcomesCount = { "A-A": 0, "A-B": 0, "B-A": 0, "B-B": 0 };
-        let roundScoreSum = 0;
-
-        pairs.forEach(pair => {
-          const c1 = players[pair.p1] && players[pair.p1].currentChoice ? players[pair.p1].currentChoice : "B";
-          const c2 = players[pair.p2] && players[pair.p2].currentChoice ? players[pair.p2].currentChoice : "B";
-          pair.c1 = c1;
-          pair.c2 = c2;
-
-          if (c1 === "A") totalCoopA++; else totalDefectB++;
-          if (c2 === "A") totalCoopA++; else totalDefectB++;
-
-          const key = c1 + "-" + c2;
-          if (outcomesCount[key] !== undefined) outcomesCount[key]++;
-
-          const outcome = PAYOFF[key] || { score1: 0, score2: 0 };
+    // --- 主持人指令 ---
+    async function createRoom
