@@ -28,13 +28,12 @@
 </head>
 <body>
 
-  <!-- 頂部連線狀態 -->
   <div style="max-width: 480px; margin: 0 auto 8px auto; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
-    <span id="net-status" style="color: #10b981;">● 系統已就緒 (原生高速引擎)</span>
+    <span id="net-status">● 系統已就緒</span>
     <a href="javascript:void(0)" onclick="clearAndReset()" style="color: #818cf8; text-decoration: none;">[重置快取]</a>
   </div>
 
-  <!-- 1. 首頁畫面 (靜態 HTML，保證 0 毫秒秒出，永遠不會空白！) -->
+  <!-- 1. 首頁畫面 -->
   <div id="view-home" class="card">
     <div style="text-align: center; margin-bottom: 20px;">
       <span class="badge">互動現場工具</span>
@@ -55,23 +54,51 @@
       <div style="font-size: 13px; color: #94a3b8; margin-bottom: 6px;">學員加入房間：</div>
       <input id="input-room" class="input-field" placeholder="請輸入 6 碼房間號碼" />
       <input id="input-name" class="input-field" placeholder="請輸入您的名字或暱稱" />
-      <button class="btn btn-primary" onclick="playerJoin()">進入房間</button>
+      <button id="btn-join" class="btn btn-primary" onclick="playerJoin()">進入房間</button>
     </div>
 
     <div style="text-align: center; margin: 18px 0; color: #64748b; font-size: 12px;">─── 或 ───</div>
 
-    <button class="btn btn-secondary" onclick="hostCreateRoom()">我是講師 / 主持人（建立新房間）</button>
+    <button id="btn-create-host" class="btn btn-secondary" onclick="hostCreateRoom()">我是講師 / 主持人（建立新房間）</button>
   </div>
 
-  <!-- 2. 主持人控台畫面 (動態注入) -->
+  <!-- 2. 主持人控台畫面 -->
   <div id="view-host" class="host-card hidden"></div>
 
-  <!-- 3. 學員手機介面 (動態注入) -->
+  <!-- 3. 學員手機介面 -->
   <div id="view-player" class="card hidden"></div>
 
-  <!-- 程式本體：純原生 JavaScript，零外部函式庫，速度極快 -->
+  <!-- 官方 Firebase SDK（置於 body 底部非同步載入，不阻塞頁面） -->
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
+
   <script>
-    const FIREBASE_BASE = "https://game-theory-9aaae-default-rtdb.firebaseio.com";
+    const firebaseConfig = {
+      apiKey: "AIzaSyCdy8u9yX2Ep09MGBR6UB9pTV21Qu4g_BM",
+      authDomain: "game-theory-9aaae.firebaseapp.com",
+      databaseURL: "https://game-theory-9aaae-default-rtdb.firebaseio.com",
+      projectId: "game-theory-9aaae",
+      storageBucket: "game-theory-9aaae.firebasestorage.app",
+      messagingSenderId: "901157590930",
+      appId: "1:901157590930:web:b7c8e40fb4ee255dca934b",
+      measurementId: "G-PF713E3SNT"
+    };
+
+    let db = null;
+    function initFirebase() {
+      try {
+        if (window.firebase && !firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+          db = firebase.database();
+          document.getElementById("net-status").innerHTML = "<span style='color:#10b981;'>● 雲端連線正常</span>";
+        } else if (window.firebase) {
+          db = firebase.database();
+        }
+      } catch (err) {
+        console.error("Firebase 初始化失敗:", err);
+      }
+      return db;
+    }
 
     const PAYOFF = {
       "A-A": { score1: 3, score2: 3, label1: "+3", label2: "+3", tag: "雙方合作" },
@@ -81,72 +108,23 @@
     };
 
     let state = {
-      role: null, // 'host' | 'player'
+      role: null,
       roomId: "",
       playerName: "",
       playerId: "p_" + Math.random().toString(36).substring(2, 9),
-      roomData: null,
-      pollingTimer: null
+      roomData: null
     };
 
-    // 讀取 URL 參數與暫存
     try {
       const params = new URLSearchParams(window.location.search);
-      if (params.get("room")) {
-        document.getElementById("input-room").value = params.get("room").toUpperCase().trim();
-      }
-      const savedName = localStorage.getItem("gt_raw_name");
+      if (params.get("room")) document.getElementById("input-room").value = params.get("room").toUpperCase().trim();
+      const savedName = localStorage.getItem("gt_name_v4");
       if (savedName) document.getElementById("input-name").value = savedName;
     } catch(e){}
 
     function clearAndReset() {
       try { localStorage.clear(); } catch(e){}
       window.location.href = window.location.origin + window.location.pathname + "?t=" + Date.now();
-    }
-
-    // --- Firebase 原生 REST API 讀寫 (超穩定，永不卡死) ---
-    async function fbGet(path) {
-      const res = await fetch(`${FIREBASE_BASE}/${path}.json`);
-      return await res.json();
-    }
-    async function fbPut(path, data) {
-      await fetch(`${FIREBASE_BASE}/${path}.json`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
-      });
-    }
-    async function fbPatch(path, data) {
-      await fetch(`${FIREBASE_BASE}/${path}.json`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
-      });
-    }
-
-    // 輪詢同步（每秒自動向資料庫同步一次，比 WebSocket 更耐受手機休眠與網路切換）
-    function startSync(roomId) {
-      if (state.pollingTimer) clearInterval(state.pollingTimer);
-      async function tick() {
-        if (!state.roomId) return;
-        try {
-          const data = await fbGet(`rooms/${roomId}`);
-          if (!data) {
-            if (state.role === "player") {
-              alert("房間已解散！");
-              exitRoom();
-            }
-            return;
-          }
-          state.roomData = data;
-          if (state.role === "host") renderHost();
-          if (state.role === "player") renderPlayer();
-        } catch(e) {
-          console.error("同步延遲:", e);
-        }
-      }
-      tick();
-      state.pollingTimer = setInterval(tick, 1000);
     }
 
     function switchView(viewName) {
@@ -158,8 +136,29 @@
       if (viewName === "player") document.getElementById("view-player").classList.remove("hidden");
     }
 
+    let activeListener = null;
+    function listenRoom(code) {
+      const database = initFirebase();
+      if (!database) return;
+      if (activeListener) activeListener.off();
+      activeListener = database.ref("rooms/" + code);
+      activeListener.on("value", snapshot => {
+        const val = snapshot.val();
+        if (!val) {
+          if (state.role === "player") {
+            alert("房間已解散！");
+            exitRoom();
+          }
+          return;
+        }
+        state.roomData = val;
+        if (state.role === "host") renderHost();
+        if (state.role === "player") renderPlayer();
+      });
+    }
+
     function exitRoom() {
-      if (state.pollingTimer) clearInterval(state.pollingTimer);
+      if (activeListener) activeListener.off();
       state.role = null;
       state.roomId = "";
       state.roomData = null;
@@ -167,8 +166,20 @@
       switchView("home");
     }
 
-    // --- 主持人功能 ---
+    // --- 主持人建立房間 ---
     async function hostCreateRoom() {
+      const btn = document.getElementById("btn-create-host");
+      btn.innerText = "連線建立房間中...";
+      btn.disabled = true;
+
+      const database = initFirebase();
+      if (!database) {
+        alert("尚未連上 Firebase 伺服器，請重新整理頁面再試一次！");
+        btn.innerText = "我是講師 / 主持人（建立新房間）";
+        btn.disabled = false;
+        return;
+      }
+
       const code = Math.random().toString(36).substring(2, 8).toUpperCase();
       const initData = {
         id: code,
@@ -179,15 +190,23 @@
         byePlayerId: null,
         history: []
       };
-      await fbPut(`rooms/${code}`, initData);
-      state.roomId = code;
-      state.role = "host";
-      switchView("host");
-      startSync(code);
+
+      try {
+        await database.ref("rooms/" + code).set(initData);
+        state.roomId = code;
+        state.role = "host";
+        switchView("host");
+        listenRoom(code);
+      } catch (err) {
+        alert("建立房間失敗，原因：" + err.message + "\n\n請至 Firebase Console 確認 Realtime Database 規則是否設為 .read: true, .write: true");
+      } finally {
+        btn.innerText = "我是講師 / 主持人（建立新房間）";
+        btn.disabled = false;
+      }
     }
 
     async function hostStartRound(shuffle) {
-      if (!state.roomData) return;
+      if (!state.roomData || !db) return;
       const players = state.roomData.players || {};
       const keys = Object.keys(players);
       if (keys.length < 2) {
@@ -212,7 +231,7 @@
       const updated = { ...players };
       Object.keys(updated).forEach(k => { if (updated[k]) updated[k].currentChoice = null; });
 
-      await fbPatch(`rooms/${state.roomId}`, {
+      await db.ref("rooms/" + state.roomId).update({
         status: "PLAYING",
         round: (state.roomData.round || 1) + (state.roomData.status === "REVEALED" ? 1 : 0),
         pairs: newPairs,
@@ -222,7 +241,7 @@
     }
 
     async function hostReveal() {
-      if (!state.roomData) return;
+      if (!state.roomData || !db) return;
       const pairs = state.roomData.pairs || [];
       const players = { ...(state.roomData.players || {}) };
       let coopA = 0;
@@ -241,4 +260,295 @@
 
         if (players[pair.p1]) {
           players[pair.p1].score = (players[pair.p1].score || 0) + res.score1;
-          players[pair.p1].lastChange = res.
+          players[pair.p1].lastChange = res.score1;
+        }
+        if (players[pair.p2]) {
+          players[pair.p2].score = (players[pair.p2].score || 0) + res.score2;
+          players[pair.p2].lastChange = res.score2;
+        }
+      });
+
+      const totalActive = pairs.length * 2;
+      const coopRate = totalActive > 0 ? Math.round((coopA / totalActive) * 100) : 0;
+      const summary = { round: state.roomData.round || 1, coopRate, defectRate: 100 - coopRate, outcomes };
+      const history = [...(state.roomData.history || []), summary];
+
+      await db.ref("rooms/" + state.roomId).update({
+        status: "REVEALED",
+        pairs,
+        players,
+        history
+      });
+    }
+
+    async function hostAddBots() {
+      if (!state.roomData || !db) return;
+      const current = Object.keys(state.roomData.players || {}).length;
+      const updates = {};
+      for (let i = 1; i <= 4; i++) {
+        const bid = "bot_" + Date.now() + "_" + i;
+        updates["rooms/" + state.roomId + "/players/" + bid] = {
+          id: bid,
+          name: "模擬學員" + (current + i),
+          score: 0,
+          isBot: true,
+          currentChoice: null
+        };
+      }
+      await db.ref().update(updates);
+    }
+
+    async function hostBotsChoose() {
+      if (!state.roomData || !db) return;
+      const players = state.roomData.players || {};
+      const updates = {};
+      Object.values(players).forEach(p => {
+        if (p?.isBot && !p?.currentChoice) {
+          updates["rooms/" + state.roomId + "/players/" + p.id + "/currentChoice"] = Math.random() > 0.45 ? "A" : "B";
+        }
+      });
+      await db.ref().update(updates);
+    }
+
+    // --- 學員加入與操作 ---
+    async function playerJoin() {
+      const rid = document.getElementById("input-room").value.trim().toUpperCase();
+      const name = document.getElementById("input-name").value.trim();
+      if (!rid || !name) { alert("請輸入 6 碼房號與姓名！"); return; }
+
+      const database = initFirebase();
+      if (!database) { alert("尚未連上伺服器，請重新整理！"); return; }
+
+      try {
+        const snap = await database.ref("rooms/" + rid).once("value");
+        if (!snap.exists()) { alert("找不到該房間，請確認房號！"); return; }
+
+        state.roomId = rid;
+        state.playerName = name;
+        state.role = "player";
+        localStorage.setItem("gt_name_v4", name);
+
+        await database.ref("rooms/" + rid + "/players/" + state.playerId).update({
+          id: state.playerId,
+          name: name,
+          score: 0,
+          currentChoice: null
+        });
+
+        switchView("player");
+        listenRoom(rid);
+      } catch (err) {
+        alert("加入失敗：" + err.message);
+      }
+    }
+
+    async function handleChoose(opt) {
+      if (!state.roomId || !db) return;
+      await db.ref("rooms/" + state.roomId + "/players/" + state.playerId).update({
+        currentChoice: opt
+      });
+    }
+
+    // --- 介面渲染 ---
+    function renderHost() {
+      const room = state.roomData || {};
+      const players = Object.values(room.players || {});
+      const pairs = room.pairs || [];
+      const bye = room.byePlayerId ? room.players?.[room.byePlayerId] : null;
+      const history = room.history || [];
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.origin + window.location.pathname + '?room=' + state.roomId)}`;
+
+      document.getElementById("view-host").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-bottom:1px solid #334155; padding-bottom:16px; margin-bottom:16px;">
+          <div>
+            <h1 style="font-size:22px;">主持人控制中心</h1>
+            <div style="font-size:13px; color:#94a3b8; margin-top:4px;">
+              狀態：<span style="color:#38bdf8; font-weight:bold;">${room.status === "LOBBY" ? "等待學員加入" : room.status === "PLAYING" ? "第 " + room.round + " 回合進行中" : "第 " + room.round + " 回合已揭曉"}</span>
+              · 共 ${players.length} 人在線
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; background:#0f172a; padding:10px 14px; border-radius:12px; border:1px solid #334155;">
+            <div style="text-align:right;">
+              <div style="font-size:11px; color:#94a3b8;">房間代碼</div>
+              <div style="font-size:24px; font-weight:900; color:#818cf8; font-family:monospace;">${state.roomId}</div>
+            </div>
+            <img src="${qrUrl}" style="width:65px; height:65px; border-radius:6px; background:white; padding:2px;" alt="QR" />
+          </div>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px;">
+          ${room.status === "LOBBY" ? `
+            <button class="btn btn-primary" style="width:auto; padding:10px 20px;" onclick="hostStartRound(true)">🎲 自動配對並開局</button>
+          ` : `
+            <button class="btn" style="background:#0284c7; color:white; width:auto; padding:10px 18px;" onclick="hostStartRound(false)">🔄 維持原配對下一輪 (不洗牌)</button>
+            <button class="btn btn-primary" style="width:auto; padding:10px 18px;" onclick="hostStartRound(true)">🎲 重新洗牌下一輪</button>
+          `}
+          ${room.status === "PLAYING" ? `
+            <button class="btn" style="background:#059669; color:white; width:auto; padding:10px 20px;" onclick="hostReveal()">⚡ 立即揭曉算分</button>
+          ` : ''}
+          <button class="btn btn-secondary" style="width:auto; padding:10px 14px;" onclick="hostAddBots()">+4 位模擬學員</button>
+          ${room.status === "PLAYING" ? `<button class="btn btn-secondary" style="width:auto; padding:10px 14px; color:#fbbf24;" onclick="hostBotsChoose()">模擬學員一鍵完成選擇</button>` : ''}
+          <button class="btn btn-secondary" style="width:auto; padding:10px 14px; color:#f87171;" onclick="exitRoom()">解散並回首頁</button>
+        </div>
+
+        ${room.status === "LOBBY" ? `
+          <div style="background:#0f172a; padding:24px; border-radius:12px; text-align:center;">
+            <h3 style="font-size:16px;">學員加入名單 (${players.length} 人)</h3>
+            <p style="font-size:12px; color:#94a3b8; margin:6px 0 16px 0;">請學員掃描右上角 QR Code 即可進入</p>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center;">
+              ${players.map(p => `<div style="background:#1e293b; border:1px solid #334155; padding:8px 14px; border-radius:8px; font-size:13px;">${p.name}</div>`).join('')}
+            </div>
+          </div>
+        ` : `
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:16px;">
+            <div>
+              <div style="font-size:14px; font-weight:bold; margin-bottom:8px;">
+                對戰分組監控 ${bye ? `<span style="font-size:12px; color:#fbbf24;">[單數輪空：${bye.name}]</span>` : ''}
+              </div>
+              <div class="pair-grid">
+                ${pairs.map((pair, idx) => {
+                  const p1 = room.players?.[pair.p1];
+                  const p2 = room.players?.[pair.p2];
+                  const rev = room.status === "REVEALED";
+                  const out = rev ? PAYOFF[pair.c1 + "-" + pair.c2] : null;
+                  return `
+                    <div class="pair-box">
+                      <div style="display:flex; justify-content:space-between; font-size:12px; color:#94a3b8; margin-bottom:8px;">
+                        <span>第 ${idx+1} 組</span>
+                        <span>${rev ? out?.tag : (p1?.currentChoice && p2?.currentChoice ? '雙方已選定' : '等待決策...')}</span>
+                      </div>
+                      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; text-align:center;">
+                        <div style="background:#1e293b; padding:8px; border-radius:8px;">
+                          <div style="font-size:12px; color:#cbd5e1;">${p1?.name || '學員'}</div>
+                          <div style="font-weight:bold; margin-top:4px; color:${rev ? (pair.c1==='A'?'#34d399':'#fbbf24') : '#818cf8'}">
+                            ${rev ? (pair.c1==='A'?'甲方案':'乙方案') : (p1?.currentChoice ? '已選 ✓' : '...')}
+                          </div>
+                          ${rev && out ? `<div style="font-size:11px; margin-top:2px; color:${out.score1>=0?'#34d399':'#f87171'}">${out.label1} 分</div>` : ''}
+                        </div>
+                        <div style="background:#1e293b; padding:8px; border-radius:8px;">
+                          <div style="font-size:12px; color:#cbd5e1;">${p2?.name || '學員'}</div>
+                          <div style="font-weight:bold; margin-top:4px; color:${rev ? (pair.c2==='A'?'#34d399':'#fbbf24') : '#818cf8'}">
+                            ${rev ? (pair.c2==='A'?'甲方案':'乙方案') : (p2?.currentChoice ? '已選 ✓' : '...')}
+                          </div>
+                          ${rev && out ? `<div style="font-size:11px; margin-top:2px; color:${out.score2>=0?'#34d399':'#f87171'}">${out.label2} 分</div>` : ''}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <div style="background:#0f172a; padding:14px; border-radius:12px; border:1px solid #334155;">
+              <div style="font-size:14px; font-weight:bold; margin-bottom:10px;">總積分排行榜</div>
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                ${[...players].sort((a,b) => (b.score||0)-(a.score||0)).map((p, r) => `
+                  <div style="display:flex; justify-content:space-between; font-size:13px; border-bottom:1px solid #1e293b; padding-bottom:4px;">
+                    <span>#${r+1} ${p.name}</span>
+                    <span style="font-weight:bold; font-family:monospace; color:#38bdf8;">${p.score||0} 分</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        `}
+
+        ${history.length > 0 ? `
+          <div style="margin-top:24px; background:#0f172a; padding:16px; border-radius:12px; border:1px solid #334155;">
+            <div style="font-size:14px; font-weight:bold; margin-bottom:10px;">📈 各回合全場合作率 (選甲) 走勢</div>
+            <div style="display:flex; gap:12px; overflow-x:auto;">
+              ${history.map(h => `
+                <div style="background:#1e293b; border:1px solid #334155; padding:10px; border-radius:8px; min-width:110px; text-align:center;">
+                  <div style="font-size:12px; color:#94a3b8;">第 ${h.round} 輪</div>
+                  <div style="font-size:18px; font-weight:900; color:#34d399; margin:4px 0;">${h.coopRate}%</div>
+                  <div style="font-size:10px; color:#cbd5e1;">合作比例</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    function renderPlayer() {
+      const room = state.roomData || {};
+      const me = room.players?.[state.playerId];
+      const isRevealed = room.status === "REVEALED";
+      const myPair = (room.pairs || []).find(p => p.p1 === state.playerId || p.p2 === state.playerId);
+      const isBye = room.byePlayerId === state.playerId;
+      const opponentId = myPair ? (myPair.p1 === state.playerId ? myPair.p2 : myPair.p1) : null;
+      const opponent = opponentId ? room.players?.[opponentId] : null;
+      const myChoice = me?.currentChoice;
+
+      document.getElementById("view-player").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; padding:10px 14px; border-radius:12px; border:1px solid #334155; margin-bottom:16px;">
+          <div>
+            <div style="font-size:11px; color:#94a3b8;">目前學員</div>
+            <div style="font-size:15px; font-weight:bold;">${me?.name || state.playerName}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:11px; color:#94a3b8;">累積得分</div>
+            <div style="font-size:18px; font-weight:bold; color:#818cf8; font-family:monospace;">${me?.score || 0} 分</div>
+          </div>
+          <button class="btn btn-secondary" style="width:auto; padding:6px 12px; margin:0; font-size:12px;" onclick="exitRoom()">退出</button>
+        </div>
+
+        ${room.status === "LOBBY" ? `
+          <div style="text-align:center; padding:30px 10px;">
+            <div style="font-size:32px; margin-bottom:12px;">⏳</div>
+            <h3 style="font-size:18px;">已成功進入大廳</h3>
+            <p style="font-size:13px; color:#94a3b8; margin-top:6px;">請等待講師在大螢幕開始開局配對...</p>
+            <div style="font-size:11px; color:#64748b; margin-top:16px;">房號：${state.roomId}</div>
+          </div>
+        ` : isBye ? `
+          <div style="text-align:center; padding:30px 10px; background:#78350f; border-radius:12px;">
+            <div style="font-size:32px; margin-bottom:10px;">☕</div>
+            <h3 style="font-size:16px; color:#fef3c7;">本輪因人數為單數，您暫時輪空觀戰</h3>
+            <p style="font-size:12px; color:#fde68a; margin-top:4px;">下一輪系統將優先為您配對！</p>
+          </div>
+        ` : `
+          <div style="background:#0f172a; padding:14px; border-radius:12px; border:1px solid #334155; text-align:center; margin-bottom:16px;">
+            <div style="font-size:11px; color:#94a3b8;">本輪對手</div>
+            <div style="font-size:17px; font-weight:bold; margin-top:2px;">${opponent ? opponent.name : '神秘同伴'}</div>
+            <div style="font-size:12px; color:#38bdf8; margin-top:4px;">
+              ${room.status === 'PLAYING' ? (opponent?.currentChoice ? '對方已完成決定，等您選擇' : '雙方思考中...') : '本輪已公布結果'}
+            </div>
+          </div>
+
+          ${isRevealed && myPair ? `
+            <div style="background:#312e81; padding:16px; border-radius:12px; text-align:center; margin-bottom:16px;">
+              <div style="font-size:12px; color:#c7d2fe;">【 本輪結果 】</div>
+              <div style="display:flex; justify-content:space-around; margin:10px 0; font-size:16px; font-weight:bold;">
+                <div>您選：${myChoice === 'A' ? '甲方案' : '乙方案'}</div>
+                <div style="color:#94a3b8;">VS</div>
+                <div>對方選：${(myPair.p1 === state.playerId ? myPair.c2 : myPair.c1) === 'A' ? '甲方案' : '乙方案'}</div>
+              </div>
+              <div style="font-size:15px; font-weight:bold; color:#34d399;">
+                本輪獲得：${me?.lastChange !== undefined ? (me.lastChange >= 0 ? '+' + me.lastChange : me.lastChange) : 0} 分
+              </div>
+            </div>
+          ` : ''}
+
+          ${room.status === 'PLAYING' ? `
+            <div style="font-size:13px; color:#cbd5e1; margin-bottom:8px;">請選擇您的方案：</div>
+            <button class="btn btn-choice-a ${myChoice === 'A' ? 'btn-selected' : ''}" onclick="handleChoose('A')">
+              <div style="font-size:16px; font-weight:bold;">選擇：甲方案 (合作)</div>
+              <div style="font-size:12px; opacity:0.85; margin-top:4px;">雙方皆合作各得 +3 分；若對方背叛您得 -2 分</div>
+            </button>
+            <button class="btn btn-choice-b ${myChoice === 'B' ? 'btn-selected' : ''}" onclick="handleChoose('B')">
+              <div style="font-size:16px; font-weight:bold;">選擇：乙方案 (自保/搶分)</div>
+              <div style="font-size:12px; opacity:0.85; margin-top:4px;">若對方選甲您獨得 +5 分；雙方皆選乙各得 +1 分</div>
+            </button>
+            ${myChoice ? `<div style="text-align:center; font-size:13px; color:#34d399; margin-top:12px;">✓ 您已選定，等候大螢幕揭曉！</div>` : ''}
+          ` : ''}
+        `}
+      `;
+    }
+
+    // 啟動連線初始化
+    window.addEventListener("load", () => {
+      initFirebase();
+    });
+  </script>
+</body>
+</html>
